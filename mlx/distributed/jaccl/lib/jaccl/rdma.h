@@ -161,6 +161,7 @@ struct Connection {
   ibv_cq* completion_queue;
   ibv_qp* queue_pair;
   Destination src; // holds the local information
+  int source_gid_index = -1;
 
   Connection(ibv_context* ctx_);
   Connection(Connection&& c);
@@ -216,8 +217,22 @@ struct Connection {
     }
   }
 
-  int poll(int num_completions, ibv_wc* work_completions) {
-    return ibv_poll_cq(completion_queue, num_completions, work_completions);
+  int poll(int num_completions, ibv_wc* work_completions) const {
+    int n = ibv_poll_cq(completion_queue, num_completions, work_completions);
+    if (n < 0) {
+      throw std::runtime_error("[jaccl] Completion queue polling failed.");
+    }
+    for (int i = 0; i < n; ++i) {
+      if (work_completions[i].status != IBV_WC_SUCCESS) {
+        std::ostringstream msg;
+        msg << "[jaccl] Work completion failed with status "
+            << work_completions[i].status << ", request "
+            << work_completions[i].wr_id << ", vendor error "
+            << work_completions[i].vendor_err;
+        throw std::runtime_error(msg.str());
+      }
+    }
+    return n;
   }
 };
 
@@ -237,10 +252,8 @@ inline int poll(
       return completions;
     }
 
-    int n = ibv_poll_cq(
-        c.completion_queue,
-        num_completions - completions,
-        work_completions + completions);
+    int n =
+        c.poll(num_completions - completions, work_completions + completions);
 
     completions += n;
   }
